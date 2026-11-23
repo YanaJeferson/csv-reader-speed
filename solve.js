@@ -2,9 +2,11 @@
 //
 // The reference builds every field one character at a time. Here commas are found with
 // V8's native indexOf, ordinary runs are copied as whole slices, and the next LF / CR are
-// kept as cursors so a line is never rescanned from each of its fields. The broken-row
-// policy (BOM, stray CR, doubled quotes, junk after a closing quote, unterminated quotes,
-// short/long rows and their error order) is the reference's exactly.
+// kept as cursors so a line is never rescanned from each of its fields; the cursor sync is
+// inlined in the hot loops. Errors are first held as compact tuples and turned into the
+// required objects once, after parsing. The broken-row policy (BOM, stray CR, doubled quotes,
+// junk after a closing quote, unterminated quotes, short/long rows and their error order) is
+// the reference's exactly.
 
 const COMMA = 0, LINE_BREAK = 1, END = 2;
 
@@ -20,11 +22,6 @@ export function run(input) {
   let line = 1, recordLine = 1, recordRow = null;
   let nextLF = text.indexOf('\n', pos);
   let nextCR = text.indexOf('\r', pos);
-
-  function sync() {
-    if (nextLF !== -1 && nextLF < pos) nextLF = text.indexOf('\n', pos);
-    if (nextCR !== -1 && nextCR < pos) nextCR = text.indexOf('\r', pos);
-  }
 
   while (true) {
     while (pos < len) {
@@ -51,7 +48,8 @@ export function run(input) {
         value = '';
         let closed = false;
         while (true) {
-          sync();
+          if (nextLF !== -1 && nextLF < pos) nextLF = text.indexOf('\n', pos);
+          if (nextCR !== -1 && nextCR < pos) nextCR = text.indexOf('\r', pos);
           const q = text.indexOf('"', pos);
           let next = q, kind = 0;
           if (nextCR !== -1 && (next === -1 || nextCR < next)) { next = nextCR; kind = 1; }
@@ -83,7 +81,7 @@ export function run(input) {
           line = openLine;
           nextLF = text.indexOf('\n', pos);
           nextCR = text.indexOf('\r', pos);
-          errors.push({ code: 'unterminated_quote', line: recordLine, row: recordRow });
+          errors.push(['unterminated_quote', recordLine, recordRow]);
           value = '"';
           needUnquoted = true;
           checkJunk = false;
@@ -107,7 +105,8 @@ export function run(input) {
 
       if (needUnquoted) {
         while (pos < len) {
-          sync();
+          if (nextLF !== -1 && nextLF < pos) nextLF = text.indexOf('\n', pos);
+          if (nextCR !== -1 && nextCR < pos) nextCR = text.indexOf('\r', pos);
           const comma = text.indexOf(',', pos);
           let next = comma, kind = COMMA;
           if (nextCR !== -1 && (next === -1 || nextCR < next)) { next = nextCR; kind = 2; }
@@ -131,10 +130,10 @@ export function run(input) {
           if (kind === COMMA) { pos += 1; ended = COMMA; break; }
           if (kind === LINE_BREAK) { pos += 1; line += 1; ended = LINE_BREAK; break; }
           if (text.charCodeAt(pos + 1) === 10) { pos += 2; line += 1; ended = LINE_BREAK; break; }
-          errors.push({ code: 'stray_cr', line: recordLine, row: recordRow });
+          errors.push(['stray_cr', recordLine, recordRow]);
           pos += 1;
         }
-        if (checkJunk && added > 0) errors.push({ code: 'quote_junk', line: recordLine, row: recordRow });
+        if (checkJunk && added > 0) errors.push(['quote_junk', recordLine, recordRow]);
       }
       fields.push(value);
       if (ended !== COMMA) break;
@@ -144,12 +143,17 @@ export function run(input) {
     if (width < 0) width = fields.length;
     if (header && columns === null) { columns = fields; continue; }
     if (fields.length < width) {
-      errors.push({ code: 'short_row', line: recordLine, row: recordRow, fields: fields.length });
+      errors.push(['short_row', recordLine, recordRow, fields.length]);
       while (fields.length < width) fields.push('');
     } else if (fields.length > width) {
-      errors.push({ code: 'long_row', line: recordLine, row: recordRow, extra: fields.splice(width) });
+      errors.push(['long_row', recordLine, recordRow, fields.splice(width)]);
     }
     rows.push(fields);
   }
-  return { columns: header ? (columns ?? []) : null, rows, errors };
+  const outErrors = errors.map((e) => e[0] === 'short_row'
+    ? { code: e[0], line: e[1], row: e[2], fields: e[3] }
+    : e[0] === 'long_row'
+      ? { code: e[0], line: e[1], row: e[2], extra: e[3] }
+      : { code: e[0], line: e[1], row: e[2] });
+  return { columns: header ? (columns ?? []) : null, rows, errors: outErrors };
 }
