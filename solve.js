@@ -43,6 +43,7 @@ export function run(input) {
 
     while (true) {
       added = 0;
+      ended = END;
       if (text.charCodeAt(pos) === 34) {
         wasQuoted = true;
         const open = pos, openLine = line;
